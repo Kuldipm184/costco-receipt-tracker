@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h3 class="mb-0">
+                    <i class="fas fa-chart-line text-success"></i> Receipt Analysis Results
+                </h3>
+                <div>
+                    <span class="badge bg-info">
+                        {{ store_info.store_number if store_info.store_number else 'Unknown Store' }}
+                    </span>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if store_info.address %}
+                <div class="alert alert-info">
+                    <i class="fas fa-map-marker-alt"></i> 
+                    <strong>Store Location:</strong> {{ store_info.address }}
+                </div>
+                {% endif %}
+                
+                {% if comparisons %}
+                <h5 class="mb-3">
+                    <i class="fas fa-shopping-cart"></i> Items Found: {{ comparisons|length }}
+                </h5>
+                
+                <div class="row">
+                    {% for item in comparisons %}
+                    <div class="col-md-6 mb-3">
+                        <div class="price-comparison {% if item.is_lowest %}price-lowest{% else %}price-higher{% endif %}">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div>
+                                    <h6 class="mb-1">
+                                        <span class="badge bg-secondary">#{{ item.item_number }}</span>
+                                    </h6>
+                                    <p class="mb-1 fw-bold">{{ item.description }}</p>
+                                </div>
+                                <div class="text-end">
+                                    <h5 class="mb-0 {% if item.current_price < 0 %}text-danger{% else %}text-dark{% endif %}">
+                                        ${{ "%.2f"|format(item.current_price|abs) }}
+                                        {% if item.current_price < 0 %}
+                                            <small class="text-muted">(Discount)</small>
+                                        {% endif %}
+                                    </h5>
+                                    {% if item.discount and item.discount > 0 %}
+                                    <div class="small text-success">
+                                        <s class="text-muted">${{ "%.2f"|format(item.original_price) }}</s>
+                                        <span class="text-success">Save ${{ "%.2f"|format(item.discount) }}</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            
+                            {% if item.is_lowest %}
+                            <div class="alert alert-success mb-0">
+                                <i class="fas fa-trophy"></i> 
+                                <strong>Best Price!</strong> This is the lowest price we've seen in the last 30 days.
+                            </div>
+                            {% else %}
+                            <div class="alert alert-warning mb-0">
+                                <i class="fas fa-exclamation-triangle"></i> 
+                                <strong>Better Price Available!</strong>
+                                <br>
+                                <span class="fw-bold">Lower Price: ${{ "%.2f"|format(item.existing_price|abs) }}</span>
+                                {% if item.existing_price < 0 %}
+                                    <small class="text-muted">(Discount)</small>
+                                {% endif %}
+                                <br>
+                                <small>
+                                    <i class="fas fa-map-marker-alt"></i> 
+                                    Available at: {{ item.existing_store }}
+                                </small>
+                                <br>
+                                <small class="text-info">
+                                    💡 You can request a price match at your current store!
+                                </small>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <div class="mt-4">
+                    <h6><i class="fas fa-info-circle"></i> Summary</h6>
+                    <div class="row text-center">
+                        <div class="col-md-4">
+                            <div class="bg-light p-3 rounded">
+                                <h4 class="text-success">{{ comparisons|selectattr("is_lowest")|list|length }}</h4>
+                                <small>Best Prices</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="bg-light p-3 rounded">
+                                <h4 class="text-warning">{{ comparisons|rejectattr("is_lowest")|list|length }}</h4>
+                                <small>Price Match Opportunities</small>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="bg-light p-3 rounded">
+                                <h4 class="text-primary">{{ comparisons|length }}</h4>
+                                <small>Total Items</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                {% else %}
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <strong>No items found!</strong> 
+                    The OCR couldn't extract item information from your receipt. 
+                    Please try uploading a clearer image.
+                </div>
+                {% endif %}
+                
+                <div class="mt-4 text-center">
+                    <a href="{{ url_for('upload_receipt') }}" class="btn btn-primary me-2">
+                        <i class="fas fa-upload"></i> Upload Another Receipt
+                    </a>
+                    <a href="{{ url_for('history') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-history"></i> View History
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        {% if comparisons|rejectattr("is_lowest")|list|length > 0 %}
+        <div class="card mt-4">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="fas fa-lightbulb text-warning"></i> Price Match Tips
+                </h5>
+                <ul class="list-unstyled">
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Costco offers price matching within 30 days of purchase
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Bring your receipt and proof of the lower price
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        The lower price must be from another Costco location
+                    </li>
+                    <li class="mb-2">
+                        <i class="fas fa-check text-success me-2"></i>
+                        Visit customer service desk at your local Costco
+                    </li>
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %} 

@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h3 class="mb-0">
+                    <i class="fas fa-history text-primary"></i> Receipt History
+                </h3>
+                <div>
+                    <span class="badge bg-info">{{ receipts|length }} Receipt(s)</span>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if receipts %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Upload Date</th>
+                                <th>Store</th>
+                                <th>Location</th>
+                                <th>Items</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for receipt in receipts %}
+                            <tr>
+                                <td>
+                                    <i class="fas fa-calendar-alt text-muted me-1"></i>
+                                    {{ receipt.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                                    {% if receipt.receipt_date %}
+                                    <br>
+                                    <small class="text-muted">Receipt: {{ receipt.receipt_date.strftime('%Y-%m-%d') }}</small>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge bg-secondary">{{ receipt.store_number or 'Unknown' }}</span>
+                                </td>
+                                <td>
+                                    <i class="fas fa-map-marker-alt text-muted me-1"></i>
+                                    {{ receipt.store_address or 'Not available' }}
+                                </td>
+                                <td>
+                                    <span class="badge bg-primary">{{ receipt.items|length }} items</span>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary" 
+                                            onclick="toggleItems({{ receipt.id }})"
+                                            id="toggle-btn-{{ receipt.id }}">
+                                        <i class="fas fa-eye"></i> View Items
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr id="items-{{ receipt.id }}" style="display: none;">
+                                <td colspan="5">
+                                    <div class="bg-light p-3 rounded">
+                                        <h6 class="mb-3">Items in this receipt:</h6>
+                                        <div class="row">
+                                            {% for item in receipt.items %}
+                                            <div class="col-md-6 col-lg-4 mb-2">
+                                                <div class="card card-sm">
+                                                    <div class="card-body p-2">
+                                                        <div class="d-flex justify-content-between align-items-start">
+                                                            <div>
+                                                                <small class="text-muted">#{{ item.item_number }}</small>
+                                                                <br>
+                                                                <strong class="small">{{ item.description }}</strong>
+                                                            </div>
+                                                            <div class="text-end">
+                                                                <span class="badge {% if item.price < 0 %}bg-danger{% else %}bg-success{% endif %}">
+                                                                    ${{ "%.2f"|format(item.price|abs) }}
+                                                                </span>
+                                                                {% if item.discount and item.discount > 0 %}
+                                                                <div class="small text-success mt-1">
+                                                                    <s class="text-muted">${{ "%.2f"|format(item.original_price) }}</s>
+                                                                    -${{ "%.2f"|format(item.discount) }}
+                                                                </div>
+                                                                {% endif %}
+                                                            </div>
+                                                        </div>
+                                                        <small class="text-muted">
+                                                            <i class="fas fa-clock"></i> 
+                                                            {{ item.date_recorded.strftime('%Y-%m-%d') }}
+                                                        </small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5">
+                    <i class="fas fa-inbox fa-4x text-muted mb-3"></i>
+                    <h5>No Receipts Yet</h5>
+                    <p class="text-muted">Upload your first Costco receipt to start tracking prices!</p>
+                    <a href="{{ url_for('upload_receipt') }}" class="btn btn-primary">
+                        <i class="fas fa-upload"></i> Upload Receipt
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        {% if receipts %}
+        <div class="row mt-4">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h4 class="text-primary">{{ receipts|length }}</h4>
+                        <small>Total Receipts</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h4 class="text-success">-</h4>
+                        <small>Total Items Tracked</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h4 class="text-info">-</h4>
+                        <small>Unique Stores</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleItems(receiptId) {
+    const itemsRow = document.getElementById(`items-${receiptId}`);
+    const toggleBtn = document.getElementById(`toggle-btn-${receiptId}`);
+    
+    if (itemsRow.style.display === 'none' || itemsRow.style.display === '') {
+        itemsRow.style.display = 'table-row';
+        toggleBtn.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Items';
+        toggleBtn.classList.remove('btn-outline-primary');
+        toggleBtn.classList.add('btn-primary');
+    } else {
+        itemsRow.style.display = 'none';
+        toggleBtn.innerHTML = '<i class="fas fa-eye"></i> View Items';
+        toggleBtn.classList.remove('btn-primary');
+        toggleBtn.classList.add('btn-outline-primary');
+    }
+}
+</script>
+{% endblock %} 

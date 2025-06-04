@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <div class="card">
+            <div class="card-body text-center p-5">
+                <h1 class="card-title mb-4">
+                    <i class="fas fa-receipt text-primary"></i> 
+                    Costco Receipt Price Tracker
+                </h1>
+                <p class="card-text lead mb-4">
+                    Upload your Costco receipts and automatically track the best prices for your favorite items. 
+                    Get notified when better deals are available at other locations within 30 days!
+                </p>
+                
+                <div class="row text-center mb-4">
+                    <div class="col-md-4">
+                        <div class="feature-box p-3">
+                            <i class="fas fa-camera fa-3x text-primary mb-3"></i>
+                            <h5>OCR Technology</h5>
+                            <p>Advanced image processing extracts item numbers, prices, and store information automatically</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="feature-box p-3">
+                            <i class="fas fa-chart-line fa-3x text-success mb-3"></i>
+                            <h5>Price Tracking</h5>
+                            <p>Compare prices across different Costco locations and track historical price data</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="feature-box p-3">
+                            <i class="fas fa-bell fa-3x text-warning mb-3"></i>
+                            <h5>Price Alerts</h5>
+                            <p>Get notified when better prices are found within a 30-day window for price matching</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                    <a href="{{ url_for('upload_receipt') }}" class="btn btn-primary btn-lg me-md-2">
+                        <i class="fas fa-upload"></i> Upload Receipt
+                    </a>
+                    <a href="{{ url_for('history') }}" class="btn btn-outline-primary btn-lg">
+                        <i class="fas fa-history"></i> View History
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="fas fa-question-circle text-info"></i> How It Works
+                        </h5>
+                        <ol class="list-group list-group-flush">
+                            <li class="list-group-item">📱 Take a photo of your Costco receipt</li>
+                            <li class="list-group-item">⬆️ Upload the image to our secure platform</li>
+                            <li class="list-group-item">🤖 Our OCR technology extracts item details</li>
+                            <li class="list-group-item">💰 We compare prices with our database</li>
+                            <li class="list-group-item">🔔 Get alerts for better deals within 30 days</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="fas fa-shield-alt text-success"></i> Privacy & Security
+                        </h5>
+                        <ul class="list-group list-group-flush">
+                            <li class="list-group-item">🔒 Your receipts are processed securely</li>
+                            <li class="list-group-item">🗑️ Images are automatically deleted after processing</li>
+                            <li class="list-group-item">📊 Only price data is stored for comparison</li>
+                            <li class="list-group-item">🏪 Store locations help with price matching</li>
+                            <li class="list-group-item">⏰ Data older than 30 days is automatically archived</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 
