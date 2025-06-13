@@ -2,14 +2,20 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from PIL import Image
-import pytesseract
-import cv2
-import numpy as np
+
+
 import re
 import os
+import json
 from datetime import datetime, timedelta
 from dateutil import parser
 import tempfile
+import base64
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-in-production')
@@ -44,427 +50,234 @@ class ReceiptItem(db.Model):
 
 class ReceiptProcessor:
     def __init__(self):
-        # More flexible patterns for different receipt formats
-        self.item_patterns = [
-            # P0: Standard pattern: item_number, description, price. Price can be "12.34" or "12.34-"
-            r'(\d{6,8})\s+([A-Za-z0-9\s/\-&\.\,\']+?)\s+((?:\d+\.\d{2})(?:-)?)(?:\s*[^\d\s]+)?',
-            # P1: Alternative pattern with more flexible spacing. Price "12.34"
-            r'(\d{6,8})\s*([A-Za-z0-9\s/\-&\.\,\']{10,50}?)\s+(\d+\.\d{2})(?:\s*[^\d\s]+)?',
-            # P2: Pattern for items with asterisks or special characters. Price "12.34"
-            r'(\d{6,8})\*?\s+([A-Za-z0-9\s/\-&\.\,\']+?)\s+(\d+\.\d{2})(?:\s*[^\d\s]+)?',
-            # P3: Pattern for discounted items (dash before price). Price "12.34" (sign is outside group)
-            r'(\d{6,8})\s+([A-Za-z0-9\s/\-&\.\,\']+?)\s+\-(\d+\.\d{2})(?:\s*[^\d\s]+)?',
-            # P4: Pattern for Costco discount format (dash after price, general item). Price is "12.34-" (sign in group)
-            r'(\d{6,8})\s+([A-Za-z0-9\s/\-&\.\,\']+?)\s+(\d+\.\d{2}-)(?:\s*[^\d\s]+)?',
-            # P5: Pattern for Costco discount line format: "352844 1797100 3.00- |,". Price is "12.34-" (sign in group)
-            r'(\d{6,8})\s+(\d{6,8})\s+(\d+\.\d{2}-)\s*(?:\|,)?',
-        ]
-        self.store_pattern = r'([A-Z\s]+#\d+)'
-        self.address_pattern = r'(\d+\s+[A-Z\s]+(?:BLVD|AVE|ST|RD|DR|LN|CT|WAY))\s*([A-Z\s]+,\s*[A-Z]{2}\s*\d{5})'
+        # Check if OpenAI API key is available
+        if not os.environ.get('OPENAI_API_KEY'):
+            print("WARNING: OPENAI_API_KEY not found. Receipt processing will not work.")
+            print("Please set your OpenAI API key in .env file")
+            self.client = None
+            self.agent_available = False
+            return
         
-    def preprocess_image(self, image_path):
-        """Enhanced image preprocessing for better OCR results"""
-        # Read image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError("Could not read image file")
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Apply multiple preprocessing techniques
-        # 1. Noise reduction
-        denoised = cv2.fastNlMeansDenoising(gray)
-        
-        # 2. Contrast enhancement
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(denoised)
-        
-        # 3. Adaptive thresholding for better text extraction
-        binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                     cv2.THRESH_BINARY, 11, 2)
-        
-        # 4. Morphological operations to clean up text
-        kernel = np.ones((1,1), np.uint8)
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        
-        return cleaned
+        try:
+            self.client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+            self.agent_available = True
+            print("OpenAI client initialized successfully!")
+        except Exception as e:
+            print(f"Error initializing OpenAI client: {e}")
+            self.client = None
+            self.agent_available = False
+    
+    def encode_image(self, image_path):
+        """Encode image to base64"""
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
     
     def extract_text_from_image(self, image_path):
-        """Extract text from receipt image using multiple OCR configurations"""
+        """Extract structured data from receipt image using OpenAI Vision"""
+        if not self.agent_available or not self.client:
+            raise Exception("OpenAI client is not available. Please check your API key.")
+        
         try:
-            # Preprocess image
-            processed_image = self.preprocess_image(image_path)
+            print(f"Processing receipt with OpenAI Vision: {image_path}")
             
-            # Try multiple OCR configurations
-            ocr_configs = [
-                '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz .,/$-#*',
-                '--psm 4 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz .,/$-#*',
-                '--psm 6',
-                '--psm 4',
-                '--psm 3'
-            ]
+            # Encode the image
+            base64_image = self.encode_image(image_path)
             
-            best_text = ""
-            for config in ocr_configs:
-                try:
-                    text = pytesseract.image_to_string(processed_image, config=config)
-                    if len(text.strip()) > len(best_text.strip()):
-                        best_text = text
-                except:
-                    continue
+            # Create the prompt
+            prompt = """
+            You are a meticulous data extraction agent specializing in Costco receipts. Your task is to analyze the receipt image and convert it into a structured JSON object. You must follow the processing logic below with absolute precision.
+
+            **CRITICAL: Costco receipts have a specific discount pattern that you MUST identify:**
+
+            1. **Primary Item Lines**: Lines with item numbers (6-8 digits), descriptions, and prices
+            2. **Discount Lines**: Separate lines with negative amounts and forward slash patterns like "/1234567"
+
+            **Processing Instructions:**
+
+            **Step 1: Extract Store Information**
+            - Store number and name (e.g., "HAYWARD #1061")
+            - Complete address
+
+            **Step 2: Extract Receipt Date**
+            - Find and extract the transaction date
+
+            **Step 3: Two-Pass Item Processing (CRITICAL FOR DISCOUNTS)**
+
+            **Pass 1 - Identify Primary Items:**
+            - Find lines with: [ITEM_NUMBER] [DESCRIPTION] [PRICE]
+            - Example: "1865480 AM PLISSETOP 14.99"
+            - Record the original price from this line
+            - Initially set discount to 0
+
+            **Pass 2 - Apply Discounts:**
+            - Look for discount lines with patterns like: "[REF_NUMBER] /[ITEM_NUMBER] [AMOUNT]-"
+            - Example: "354966 /1865480 3.00-"
+            - The number after "/" is the target item number
+            - The amount with "-" is the discount amount
+            - **IMPORTANT**: Discount lines may appear anywhere on the receipt - scan the entire receipt text
+            - Apply this discount to the matching item from Pass 1
+
+            **Example Processing:**
+            ```
+            Receipt lines:
+            1865480 AM PLISSETOP 14.99 Y
+            354966 /1865480 3.00-
+
+            Result:
+            Item 1865480: original_price=14.99, discount=3.00, price=11.99
+            ```
+
+            **JSON Output Format:**
+            Return ONLY a valid JSON object:
+            ```json
+            {
+                "store_info": {
+                    "store_number": "STRING",
+                    "address": "STRING"
+                },
+                "receipt_date": "YYYY-MM-DD",
+                "items": [
+                    {
+                        "item_number": "STRING",
+                        "description": "STRING",
+                        "original_price": FLOAT,
+                        "discount": FLOAT,
+                        "price": FLOAT
+                    }
+                ]
+            }
+            ```
+
+            **Critical Rules:**
+            - Discount lines do NOT create new items - they only modify existing items
+            - If no discount line exists for an item, set discount to 0
+            - Use 0 instead of null for numeric values
+            - **SCAN ENTIRE RECEIPT**: Discount lines can appear anywhere - before, after, or mixed with item lines
+            - **COMMON PATTERNS**: Look for lines containing "/" followed by numbers, or lines with negative amounts
+            - Focus on accuracy - better to miss a discount than create incorrect data
+            """
             
-            # If no good text extracted, try with original image
-            if len(best_text.strip()) < 50:
-                original_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-                best_text = pytesseract.image_to_string(original_image, config='--psm 6')
+            # Make the API call
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                    "detail": "high"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=2000,
+                temperature=0.1
+            )
             
-            # Debug: Print extracted text (remove in production)
-            print(f"OCR Extracted text length: {len(best_text)}")
-            print("FULL EXTRACTED TEXT:")
-            print(best_text)
+            agent_response = response.choices[0].message.content
+            print("OpenAI Response:")
+            print(agent_response)
             print("="*50)
             
-            return best_text
+            return agent_response
+            
         except Exception as e:
-            print(f"OCR Error: {e}")
-            return ""
+            print(f"OpenAI API Error: {e}")
+            raise Exception(f"Failed to process receipt with OpenAI: {e}")
     
-    def parse_receipt_text(self, text):
-        """Parse extracted text to get structured data"""
-        lines = text.split('\n')
-        
-        # Extract store information
-        store_info = self.extract_store_info(text)
-        
-        # Extract items
-        items = self.extract_items(text)
-        
-        # Try to extract receipt date
-        receipt_date = self.extract_receipt_date(text)
-        
-        return {
-            'store_info': store_info,
-            'items': items,
-            'receipt_date': receipt_date
-        }
-    
-    def extract_store_info(self, text):
-        """Extract store number and address"""
-        store_info = {'store_number': '', 'address': ''}
-        
-        # Look for store number pattern (e.g., "HAYWARD #1061")
-        store_match = re.search(r'([A-Z\s]+)#(\d+)', text)
-        if store_match:
-            store_info['store_number'] = f"{store_match.group(1).strip()} #{store_match.group(2)}"
-        
-        # Look for address pattern
-        address_lines = []
-        lines = text.split('\n')
-        for i, line in enumerate(lines):
-            # Look for street address pattern
-            if re.search(r'\d+\s+[A-Z\s]+(BLVD|AVE|ST|RD|DR|LN|CT|WAY)', line):
-                address_lines.append(line.strip())
-                # Check next line for city, state, zip
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if re.search(r'[A-Z\s]+,\s*[A-Z]{2}\s*\d{5}', next_line):
-                        address_lines.append(next_line)
-                break
-        
-        if address_lines:
-            store_info['address'] = ' '.join(address_lines)
-        
-        return store_info
-    
-    def extract_items(self, text):
-        """Extract item numbers, descriptions, and prices with multiple patterns"""
-        items = []
-        lines = text.split('\n')
-        
-        print(f"Processing {len(lines)} lines for items...")
-        
-        raw_items = {} 
-        for line_num, line in enumerate(lines):
-            line = line.strip()
-            if len(line) < 10:
-                continue
-            if line in raw_items:
-                continue
-                
-            item_found_this_line = False
-            for pattern_num, pattern in enumerate(self.item_patterns):
-                if item_found_this_line:
-                    break
-                    
-                matches = re.findall(pattern, line, re.IGNORECASE)
-                for match_parts in matches:
-                    # Ensure match_parts is a tuple (it will be if groups are defined)
-                    current_match_tuple = match_parts if isinstance(match_parts, tuple) else (match_parts,)
-
-                    if len(current_match_tuple) < 3: # Need at least item, desc, price
-                        continue
-
-                    item_number_candidate = current_match_tuple[0]
-                    description_candidate = current_match_tuple[1].strip()
-                    price_str_candidate = current_match_tuple[2].strip() # P0 captures "12.34" or "12.34-", P3 captures "12.34", P4/P5 capture "12.34-"
-
-                    # --- Start Refined Description Filter ---
-                    passes_description_filter = True # Assume valid by default
-                    if pattern_num == 5: # P5: Costco specific discount r'(\d{6,8})\s+(\d{6,8})\s+(\d+\.\d{2}-)...'
-                        # For P5, description_candidate *must* be a 6-8 digit item code
-                        if not (description_candidate.isdigit() and 6 <= len(description_candidate) <= 8):
-                            passes_description_filter = False 
-                    else: # For other patterns (P0-P4)
-                        # Reject if too short, or if all digits (usually not a valid description)
-                        if len(description_candidate) < 3 or description_candidate.isdigit():
-                            passes_description_filter = False
-                    
-                    if not passes_description_filter:
-                        # print(f"DEBUG: Line skipped by description filter. Pattern {pattern_num}, Desc: '{description_candidate}', Line: '{line}'")
-                        continue
-                    # --- End Refined Description Filter ---
-
-                    # --- Start Refined Price Parsing ---
-                    price = 0.0
-                    try:
-                        price_numeric_part = price_str_candidate
-                        is_negative = False
-
-                        if price_str_candidate.endswith('-'): # Handles P0 (if "12.34-"), P4, P5
-                            price_numeric_part = price_str_candidate[:-1]
-                            is_negative = True
-                        
-                        # For P3 (r'... \-(\d+\.\d{2})'), price_str_candidate is "3.00", but pattern implies negative.
-                        if pattern_num == 3: 
-                            is_negative = True
-                        
-                        # Validate numeric part before float conversion
-                        if not re.match(r'^\d+\.\d{2}$', price_numeric_part):
-                            # print(f"DEBUG: Invalid numeric price part: '{price_numeric_part}' from '{price_str_candidate}' (Pattern {pattern_num}) line: '{line}'. Skipping.")
-                            continue
-
-                        price_abs = float(price_numeric_part)
-                        price = -price_abs if is_negative else price_abs
-                    except ValueError:
-                        # print(f"DEBUG: ValueError converting price: '{price_str_candidate}' (numeric part: '{price_numeric_part}') (Pattern {pattern_num}) line: '{line}'. Skipping.")
-                        continue
-                    # --- End Refined Price Parsing ---
-                    
-                    raw_items[line] = {
-                        'item_number': item_number_candidate,
-                        'description': description_candidate,
-                        'price': price,
-                        'original_line': line
-                    }
-                    print(f"Raw item found (Pattern {pattern_num}): {item_number_candidate} - {description_candidate} - ${price:.2f}")
-                    item_found_this_line = True
-                    break # Found a match with this pattern, move to next line
-        
-        # Second pass: separate regular items from discount items
-        regular_items = {}
-        discount_items_raw = []
-        
-        print(f"=== SECOND PASS: Processing {len(raw_items)} raw items ===")
-        
-        for line, item_data in raw_items.items():
-            item_price = item_data['price']
-            item_description = item_data['description']
-            item_number = item_data['item_number'] # This is the first field from regex
-
-            print(f"Processing: {item_number} - '{item_description}' - ${item_price:.2f}")
-
-            # Check if this is a discount line based on description or price
-            is_discount_line = False
-            referenced_item_for_discount = None
-            discount_value = 0
-
-            if item_description.startswith('/'): # Standard discount: /<item_num>
-                match = re.search(r'/(\d{6,8})', item_description)
-                if match:
-                    referenced_item_for_discount = match.group(1)
-                    discount_value = abs(item_price)
-                    is_discount_line = True
-                    print(f"  → Discount found (slash type): ${discount_value:.2f} for item {referenced_item_for_discount}")
+    def parse_receipt_text(self, agent_response):
+        """Parse OpenAI response to get structured data"""
+        try:
+            # Try to extract JSON from the response
+            import re
             
-            elif item_price < 0: # Price itself is negative
-                discount_value = abs(item_price)
-                is_discount_line = True
-                # Try to find referenced item in description if it's a digit string (item code)
-                if item_description.isdigit() and 6 <= len(item_description) <= 8:
-                    referenced_item_for_discount = item_description
-                    print(f"  → Discount found (negative price, desc is item code): ${discount_value:.2f} for item {referenced_item_for_discount}")
-                else:
-                    print(f"  → Discount found (negative price, general): ${discount_value:.2f}. Trying to use item_number as reference.")
-                    if item_number.isdigit() and 6 <= len(item_number) <= 8:
-                        referenced_item_for_discount = item_number
-                        print(f"  → Using item_number {item_number} as reference")
-
-            if is_discount_line and referenced_item_for_discount:
-                discount_items_raw.append({
-                    'referenced_item': referenced_item_for_discount,
-                    'discount': discount_value
-                })
-                print(f"  → Added to discount list: ${discount_value:.2f} for item {referenced_item_for_discount}")
-            elif is_discount_line and not referenced_item_for_discount:
-                # This is a discount line but we couldn't directly extract a referenced item number
-                if item_number.isdigit() and 6 <= len(item_number) <= 8:
-                     discount_items_raw.append({
-                        'referenced_item': item_number, # Use the discount's own code as a candidate for fuzzy matching
-                        'discount': discount_value,
-                        'is_fuzzy_candidate': True 
-                    })
-                     print(f"  → Added to discount list (fuzzy candidate): ${discount_value:.2f} using item_number {item_number}")
-            else: # Regular item (price is positive, or not identified as discount structure)
-                if item_number not in regular_items:
-                    regular_items[item_number] = {
-                        'item_number': item_number,
-                        'description': item_description,
-                        'original_price': item_price, # This is the price from receipt
-                        'discount': 0
-                    }
-                    print(f"  → Added as regular item: {item_number} - {item_description} - ${item_price:.2f}")
-                else:
-                    print(f"  → Duplicate regular item skipped: {item_number}")
-
-        print(f"=== SUMMARY: {len(regular_items)} regular items, {len(discount_items_raw)} discount items ===")
-        print("Regular items:", list(regular_items.keys()))
-        print("Discount items:", [f"{d['referenced_item']}(${d['discount']:.2f})" for d in discount_items_raw])
-        
-        # Third pass: apply discounts to regular items with fuzzy matching for OCR errors
-        discount_totals = {}
-        
-        print(f"=== THIRD PASS: Applying {len(discount_items_raw)} discounts to {len(regular_items)} regular items ===")
-        
-        for discount_item in discount_items_raw:
-            referenced_item_number = discount_item['referenced_item']
-            discount_amount = discount_item['discount']
-            
-            print(f"Trying to apply ${discount_amount:.2f} discount for item {referenced_item_number}")
-            
-            # First try exact match
-            if referenced_item_number in regular_items:
-                if referenced_item_number not in discount_totals:
-                    discount_totals[referenced_item_number] = 0
-                discount_totals[referenced_item_number] += discount_amount
-                print(f"  → Applied ${discount_amount:.2f} discount to item {referenced_item_number} (exact match)")
-                continue
-            
-            # If no exact match, try fuzzy matching for OCR errors
-            print(f"  → No exact match found, trying fuzzy matching...")
-            best_match = None
-            min_diff = float('inf')
-            
-            for existing_item in regular_items.keys():
-                if len(existing_item) == len(referenced_item_number):
-                    # Check if they're similar (count character differences)
-                    diff_count = sum(1 for i, (a, b) in enumerate(zip(existing_item, referenced_item_number)) if a != b)
-                    if diff_count <= 2 and diff_count < min_diff:  # Allow 1-2 character differences
-                        min_diff = diff_count
-                        best_match = existing_item
-                        print(f"    → Potential match: {existing_item} (diff: {diff_count})")
-            
-            if best_match:
-                if best_match not in discount_totals:
-                    discount_totals[best_match] = 0
-                discount_totals[best_match] += discount_amount
-                print(f"  → Applied ${discount_amount:.2f} discount to item {best_match} (fuzzy matched from {referenced_item_number}, {min_diff} differences)")
+            # Look for JSON block in the response
+            json_match = re.search(r'\{.*\}', agent_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
             else:
-                print(f"  → Warning: Could not find item to apply discount of ${discount_amount:.2f} for reference {referenced_item_number}")
-        
-        print(f"=== DISCOUNT TOTALS: {discount_totals} ===")
-        
-        # Apply discount totals to regular items
-        for item_number, total_discount in discount_totals.items():
-            if item_number in regular_items:
-                regular_items[item_number]['discount'] = total_discount
-                print(f"Applied total discount of ${total_discount:.2f} to item {item_number}")
-        
-        # Calculate final prices and create items list
-        print(f"=== FINAL ITEMS LIST ===")
-        for item_number, item_data in regular_items.items():
-            final_price = item_data['original_price'] - item_data['discount']
+                # Try to parse the entire response as JSON
+                json_str = agent_response.strip()
             
-            items.append({
-                'item_number': item_number,
-                'description': item_data['description'],
-                'price': final_price,
-                'original_price': item_data['original_price'],
-                'discount': item_data['discount']
-            })
+            # Parse the JSON
+            data = json.loads(json_str)
             
-            if item_data['discount'] > 0:
-                print(f"Final item: {item_number} - {item_data['description']} - Original: ${item_data['original_price']:.2f}, Discount: ${item_data['discount']:.2f}, Final: ${final_price:.2f}")
-            else:
-                print(f"Final item: {item_number} - {item_data['description']} - ${final_price:.2f}")
-        
-        # If no items found with strict patterns, try a looser approach
-        if not items:
-            print("No items found with standard patterns, trying looser matching...")
-            items = self.extract_items_loose(text)
-        
-        print(f"Total items found: {len(items)}")
-        return items
-    
-    def extract_items_loose(self, text):
-        """Looser item extraction for difficult-to-parse receipts"""
-        items = []
-        lines = text.split('\n')
-        
-        for line in lines:
-            line = line.strip()
+            # Ensure the data has the expected structure
+            receipt_data = {
+                'store_info': data.get('store_info', {'store_number': '', 'address': ''}),
+                'items': [],
+                'receipt_date': None
+            }
             
-            # Look for any line with a price pattern at the end
-            price_match = re.search(r'(\d+\.\d{2})[-]?\s*$', line)
-            if price_match:
-                price_str = price_match.group(1)
-                
-                # Look for item number at the beginning
-                item_match = re.match(r'^(\d{6,8})', line)
-                if item_match:
-                    item_number = item_match.group(1)
-                    
-                    # Extract description (everything between item number and price)
-                    description_part = line[len(item_number):line.rfind(price_str)].strip()
-                    
-                    # Clean up description
-                    description = re.sub(r'[*\s]+', ' ', description_part).strip()
-                    
-                    if len(description) > 2:
-                        try:
-                            price = float(price_str)
-                            if '-' in line:
-                                price = -price
-                                
-                            items.append({
-                                'item_number': item_number,
-                                'description': description,
-                                'price': price
-                            })
-                            print(f"Loose match found: {item_number} - {description} - ${price}")
-                        except ValueError:
-                            continue
-        
-        return items
-    
-    def extract_receipt_date(self, text):
-        """Try to extract receipt date from text"""
-        # Look for date patterns
-        date_patterns = [
-            r'\d{1,2}/\d{1,2}/\d{4}',
-            r'\d{4}-\d{2}-\d{2}',
-            r'\d{2}/\d{2}/\d{4}'
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, text)
-            if match:
+            # Parse receipt date
+            if data.get('receipt_date'):
                 try:
-                    return parser.parse(match.group(0))
+                    receipt_data['receipt_date'] = parser.parse(data['receipt_date'])
                 except:
-                    continue
-        
-        return None
+                    receipt_data['receipt_date'] = None
+            
+            # Process items
+            for item in data.get('items', []):
+                # Extract all price fields with proper fallbacks and null handling
+                price = item.get('price', 0)
+                original_price = item.get('original_price', price)
+                discount = item.get('discount', 0)
+                
+                # Handle null values by converting to 0
+                if price is None:
+                    price = 0
+                if original_price is None:
+                    original_price = 0
+                if discount is None:
+                    discount = 0
+                
+                # Convert to float
+                price = float(price)
+                original_price = float(original_price)
+                discount = float(discount)
+                
+                # Validate price consistency
+                if discount > 0 and original_price == price:
+                    # If discount exists but original_price equals price, calculate original_price
+                    original_price = price + discount
+                elif discount > 0 and abs((original_price - discount) - price) > 0.01:
+                    # If price calculation doesn't match, recalculate price
+                    price = original_price - discount
+                
+                processed_item = {
+                    'item_number': str(item.get('item_number', '')),
+                    'description': item.get('description', ''),
+                    'price': price,  # Final price after discount
+                    'original_price': original_price,  # Original price before discount
+                    'discount': discount  # Discount amount
+                }
+                receipt_data['items'].append(processed_item)
+                
+            print(f"Parsed {len(receipt_data['items'])} items from OpenAI response")
+            for item in receipt_data['items']:
+                if item['discount'] > 0:
+                    print(f"Item: {item['item_number']} - {item['description']} - ${item['price']:.2f} (was ${item['original_price']:.2f}, saved ${item['discount']:.2f})")
+                else:
+                    print(f"Item: {item['item_number']} - {item['description']} - ${item['price']:.2f}")
+            
+            return receipt_data
+            
+        except Exception as e:
+            print(f"Error parsing OpenAI response: {e}")
+            print(f"OpenAI response was: {agent_response}")
+            return {
+                'store_info': {'store_number': '', 'address': ''},
+                'items': [],
+                'receipt_date': None
+            }
 
 # Initialize the processor
 processor = ReceiptProcessor()
@@ -540,8 +353,8 @@ def upload_receipt():
                         'item_number': item_data['item_number'],
                         'description': item_data['description'],
                         'current_price': item_data['price'],
-                        'original_price': item_data.get('original_price', item_data['price']),
-                        'discount': item_data.get('discount', 0),
+                        'original_price': item_data['original_price'],  # Now guaranteed to exist
+                        'discount': item_data['discount'],  # Now guaranteed to exist
                         'is_lowest': True,
                         'existing_price': None,
                         'existing_store': None
@@ -560,8 +373,8 @@ def upload_receipt():
                         item_number=item_data['item_number'],
                         description=item_data['description'],
                         price=item_data['price'],
-                        original_price=item_data.get('original_price', item_data['price']),
-                        discount=item_data.get('discount', 0)
+                        original_price=item_data['original_price'],  # Now guaranteed to exist
+                        discount=item_data['discount']  # Now guaranteed to exist
                     )
                     db.session.add(new_item)
                 
